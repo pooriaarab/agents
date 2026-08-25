@@ -1,0 +1,7 @@
+#!/bin/bash
+# agents — thin brand wrapper over the vendored fleet engine (MIT, Bil0000/agents-fleet).
+# Lets you type `agents <cmd>` instead of `fleet <cmd>`. Engine internals keep the
+# `fleet` name on purpose, so upstream fixes drop in cleanly.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+exec "$here/fleet" "$@"
