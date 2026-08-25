@@ -1,19 +1,18 @@
-# secrets, tokens, credentials — never commit
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Local Fleet state and secrets
+memory.toml
 .env
 .env.*
-*.key
-*.pem
-auth.json
-*.token
-*token*
-*secret*
-*credential*
-.secrets/
-# machine-specific / caches
-.DS_Store
-node_modules/
-*.log
-.cache/
-__pycache__/
-# skill-manager lock (machine state)
-.skill-lock.json
+!.env.example
+*.cred
+*.db
+*.sqlite*
+
+# Local worktrees and generated output
+.worktrees/
+dist/
+build/
+
