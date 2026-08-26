@@ -29,26 +29,45 @@ INPUT=$(cat)
 # --- Parse the payload once ------------------------------------------------
 # Line 1 is the target repo dir; the remaining lines are the push invocations
 # found in the command (one per line), already stripped of git's global options.
-PARSED=$(echo "$INPUT" | python3 -c "
-import json, os, re, sys
+# The python source is fed through a QUOTED heredoc, never `python3 -c "..."`.
+# In a double-quoted bash string the backticks in a code comment become command
+# substitution: a comment mentioning `D=/repo; cd $D` actually RAN `cd /repo`
+# and printed "cd: /repo: No such file or directory" on every push. A quoted
+# heredoc disables all expansion, so the python body is inert text.
+# The python source is passed as a SINGLE-quoted -c argument. Two constraints
+# force this exact shape:
+#   - It must not be double-quoted. In a double-quoted bash string the
+#     backticks in a code comment become command substitution: a comment
+#     mentioning a `cd /repo` example actually RAN it, printing
+#     "cd: /repo: No such file or directory" on every push.
+#   - It must not use a heredoc. macOS ships bash 3.2, which cannot parse a
+#     heredoc inside $( ), so `PY=$(cat <<EOF ...)` is a syntax error here.
+# Single quotes disable every expansion, so the body stays inert text. The body
+# therefore contains NO apostrophe -- chr(39) builds one where a regex needs it.
+PARSED=$(CLAUDE_PREPUSH_INPUT="$INPUT" python3 -c 'import json, os, re
 
 try:
-    data = json.load(sys.stdin)
+    data = json.loads(os.environ.get("CLAUDE_PREPUSH_INPUT") or "{}")
 except Exception:
     data = {}
 
-command = data.get('tool_input', {}).get('command', '') or ''
-fallback = data.get('cwd') or os.getcwd()
+command = data.get("tool_input", {}).get("command", "") or ""
+fallback = data.get("cwd") or os.getcwd()
 
-PATH_RE = r'(\"([^\"]+)\"|\'([^\']+)\'|([^\s;&|]+))'
+SQ = chr(39)
+PATH_RE = "(\"([^\"]+)\"|{q}([^{q}]+){q}|([^\\s;&|]+))".format(q=SQ)
 GLOBAL_OPT = (
-    r'(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+'
-    r'|--namespace(?:=|\s+)\S+|--exec-path(?:=|\s+)\S+|--no-pager'
-    r'|--no-replace-objects|--literal-pathspecs|--bare|--paginate|-p|-P)'
+    "(?:-C\\s+\\S+|-c\\s+\\S+|--git-dir(?:=|\\s+)\\S+"
+    "|--work-tree(?:=|\\s+)\\S+|--namespace(?:=|\\s+)\\S+"
+    "|--exec-path(?:=|\\s+)\\S+|--no-pager|--no-replace-objects"
+    "|--literal-pathspecs|--bare|--paginate|-p|-P)"
 )
 # A command starts at the beginning, or after a separator. Anchoring here is
 # what keeps a quoted push inside a commit message from tripping the gate.
-CMD_START = r'(?:^|[\n;&|]|&&|\|\|)[ \t]*'
+CMD_START = "(?:^|[\\n;&|]|&&|\\|\\|)[ \\t]*"
+
+PROTECTED = {"main", "master", "production", "release"}
+
 
 def unquote(match):
     for group in match.groups()[1:]:
@@ -56,18 +75,17 @@ def unquote(match):
             return group
     return match.group(1)
 
+
 def target_dir():
     chosen = None
     # An explicit -C on the git invocation is the most specific signal; a later
-    # `cd` in the chain otherwise wins. A path that is not a real directory is
+    # cd in the chain otherwise wins. A path that is not a real directory is
     # ignored, so this FAILS CLOSED: a typo, a shell variable, or a command
     # substitution the hook cannot expand statically falls back to the payload
-    # cwd rather than skipping the checks. That may block a legitimate push
-    # written as `D=/repo; cd $D && ...` -- deliberate. A safety gate does not
-    # get a shell interpreter; use a literal path when a push is blocked here.
+    # cwd rather than skipping the checks.
     for pattern in (
-        r'git\s+(?:' + GLOBAL_OPT + r'\s+)*?-C\s+' + PATH_RE,
-        CMD_START + r'cd\s+' + PATH_RE,
+        "git\\s+(?:" + GLOBAL_OPT + "\\s+)*?-C\\s+" + PATH_RE,
+        CMD_START + "cd\\s+" + PATH_RE,
     ):
         for m in re.finditer(pattern, command):
             expanded = os.path.expanduser(os.path.expandvars(unquote(m)))
@@ -75,21 +93,55 @@ def target_dir():
                 chosen = expanded
     return chosen or fallback
 
+
 def push_invocations():
-    # Strip global options so the subcommand sits directly after 'git'.
-    normalized = re.sub(r'\bgit\s+(?:' + GLOBAL_OPT + r'\s+)+', 'git ', command)
+    # Strip global options so the subcommand sits directly after git.
+    normalized = re.sub("\\bgit\\s+(?:" + GLOBAL_OPT + "\\s+)+", "git ", command)
     found = []
-    for m in re.finditer(CMD_START + r'(git\s+push\b[^\n;&|]*)', normalized):
-        found.append(' '.join(m.group(1).split()))
+    for m in re.finditer(CMD_START + "(git\\s+push\\b[^\\n;&|]*)", normalized):
+        found.append(" ".join(m.group(1).split()))
     return found
 
-print(target_dir())
-for invocation in push_invocations():
-    print(invocation)
-" 2>/dev/null)
 
-TARGET_DIR=$(printf '%s\n' "$PARSED" | head -1)
-PUSH_CMDS=$(printf '%s\n' "$PARSED" | tail -n +2)
+def destinations(invocations):
+    # Refspec DESTINATIONS across all push invocations. The gate has to judge
+    # where a push LANDS, not which branch happens to be checked out.
+    # "push origin HEAD:main" and "push origin main" both land on main and must
+    # be blocked; "push origin origin/main:refs/heads/live" lands on live and is
+    # fine even while the repo sits on main.
+    dsts = []
+    for invocation in invocations:
+        tokens = invocation.split()[2:]  # drop the leading git push
+        remote_seen = False
+        for token in tokens:
+            if token.startswith("-"):
+                continue
+            if not remote_seen:
+                remote_seen = True  # first bare token is the remote
+                continue
+            spec = token.lstrip("+")
+            dst = spec.split(":")[-1] if ":" in spec else spec
+            if dst.startswith("refs/heads/"):
+                dst = dst[len("refs/heads/"):]
+            if dst.startswith("refs/tags/") or dst == "":
+                continue
+            dsts.append(dst)
+    return dsts
+
+
+invocations = push_invocations()
+dsts = destinations(invocations)
+
+print(target_dir())
+print("HAS_REFSPEC=" + ("yes" if dsts else "no"))
+print("PROTECTED_DST=" + ("yes" if any(d in PROTECTED for d in dsts) else "no"))
+for invocation in invocations:
+    print(invocation)' 2>/dev/null)
+
+TARGET_DIR=$(printf '%s\n' "$PARSED" | sed -n 1p)
+HAS_REFSPEC=$(printf '%s\n' "$PARSED" | sed -n 2p | cut -d= -f2)
+PROTECTED_DST=$(printf '%s\n' "$PARSED" | sed -n 3p | cut -d= -f2)
+PUSH_CMDS=$(printf '%s\n' "$PARSED" | tail -n +4)
 
 # Nothing that actually pushes -- let it through.
 if [ -z "$PUSH_CMDS" ]; then
@@ -111,8 +163,9 @@ if [ -z "$REPO_ROOT" ]; then
     exit 0
 fi
 
-# --- Block push to protected branches ---
-if echo "$PUSH_CMDS" | grep -qE "(origin|upstream)[[:space:]]+(main|master|production|release)\b"; then
+# --- Block push to protected branches (by DESTINATION refspec) ---
+# The text grep stays as a second line of defense in case the parse degrades.
+if [ "$PROTECTED_DST" = "yes" ] || echo "$PUSH_CMDS" | grep -qE "(origin|upstream)[[:space:]]+(main|master|production|release)\b"; then
     echo "[Pre-Push] BLOCKED: Direct push to a protected branch detected." >&2
     echo "Use a feature branch and create a PR instead." >&2
     exit 2
@@ -131,7 +184,12 @@ if echo "$PUSH_CMDS" | grep -qE -- '(--force|--force-with-lease|-f)\b'; then
 fi
 
 # --- Refuse to push from a protected branch ---
-if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+# Only when the push carries NO explicit refspec, i.e. it would push the
+# checked-out branch. With a refspec the destination is what matters, and that
+# was already judged above -- otherwise a legitimate
+# `git push origin origin/main:refs/heads/live` is rejected for the irrelevant
+# reason that the repo happens to be on main.
+if [ "$HAS_REFSPEC" = "no" ] && { [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; }; then
     echo "[Pre-Push] BLOCKED: '$REPO_ROOT' is on '$BRANCH'. Switch to a feature branch first." >&2
     echo "Create a branch with: git -C '$REPO_ROOT' checkout -b <branch-name>" >&2
     exit 2
