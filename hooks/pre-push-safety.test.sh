@@ -81,6 +81,18 @@ check "repo on $PROTECTED, reached by cd" 2 \
     "cd $ON_MAIN && $G $P" "$ON_FEATURE"
 check "force onto $PROTECTED" 2 \
     "$G -C $ON_MAIN $P --force" "$ON_FEATURE"
+check "decoy cd to a non-repo dir must not shadow a real -C target" 2 \
+    "cd $TMP && $G -C $ON_MAIN $P" "$ON_FEATURE"
+check "refspec dst targets $PROTECTED (HEAD:$PROTECTED)" 2 \
+    "cd $ON_FEATURE && $G $P origin HEAD:$PROTECTED" "$ON_FEATURE"
+check "refspec dst targets $PROTECTED (src:$PROTECTED)" 2 \
+    "cd $ON_FEATURE && $G $P origin feature/x:$PROTECTED" "$ON_FEATURE"
+check "force-refspec shorthand +$PROTECTED" 2 \
+    "cd $ON_FEATURE && $G $P origin +$PROTECTED" "$ON_FEATURE"
+
+echo "allow (refspec forms that do not target a protected branch):"
+check "refspec src and dst both feature branches" 0 \
+    "cd $ON_FEATURE && $G $P origin feature/x:feature/x" "$ON_FEATURE"
 
 echo
 echo "$pass passed, $fail failed"
