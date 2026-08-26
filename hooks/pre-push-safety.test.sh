@@ -13,6 +13,8 @@
 #     to be on main -- the destination is what matters, not the checked-out branch
 #   - backticks in the hook's own python comments being command-substituted by
 #     bash, which ran a `cd` from an example and printed an error on every push
+#   - `--repo=<repo>` (attached form) swallowing the positional remote arg, so
+#     the real destination token was misread as the remote and never checked
 set -uo pipefail
 
 HOOK="${1:-$(dirname "$0")/pre-push-safety.sh}"
@@ -95,6 +97,8 @@ check "bare @ source pushes the checked-out $PROTECTED branch" 2 \
     "$G -C $ON_MAIN $P origin @" "$ON_MAIN"
 check "push-option value is not mistaken for a refspec destination" 2 \
     "$G -C $ON_MAIN $P origin -o ci.skip" "$ON_MAIN"
+check "attached --repo= form still resolves the real destination" 2 \
+    "$G -C $ON_FEATURE $P --repo=origin $PROTECTED" "$ON_FEATURE"
 
 echo "allow (destination, not checked-out branch, decides):"
 # The promote case: the repo sits on main, but the push lands on `live`.

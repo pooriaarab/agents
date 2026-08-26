@@ -109,11 +109,18 @@ def destinations(invocations):
     # "push origin HEAD:main" and "push origin main" both land on main and must
     # be blocked; "push origin origin/main:refs/heads/live" lands on live and is
     # fine even while the repo sits on main.
-    # Push options that take their value as a SEPARATE token (not attached via
-    # `=`), e.g. `-o ci.skip`. Left unhandled, the value token is mistaken for
-    # a refspec destination, which sets HAS_REFSPEC=yes and skips both the
-    # protected-destination check and the checked-out-branch fallback below.
+    # Push options that take a value, in EITHER the separate-token form
+    # (`-o ci.skip`) or the attached form (`--push-option=ci.skip`). Left
+    # unhandled, the value token is mistaken for a refspec destination, which
+    # sets HAS_REFSPEC=yes and skips both the protected-destination check and
+    # the checked-out-branch fallback below.
     OPT_WITH_ARG = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
+    # --repo (or --repo=<repo>) REPLACES the positional <repository> argument.
+    # Without this, `git push --repo=origin main` -- valid git syntax with no
+    # bare "origin" token at all -- leaves remote_seen False, so the "main"
+    # destination is misclassified as the remote and never lands in dsts,
+    # silently skipping the protected-destination check.
+    REPO_OPTS = {"--repo"}
     dsts = []
     for invocation in invocations:
         tokens = invocation.split()[2:]  # drop the leading git push
@@ -124,8 +131,12 @@ def destinations(invocations):
                 skip_next = False
                 continue
             if token.startswith("-"):
-                if token in OPT_WITH_ARG:
-                    skip_next = True
+                flag = token.split("=")[0]
+                if flag in OPT_WITH_ARG:
+                    if flag in REPO_OPTS:
+                        remote_seen = True
+                    if "=" not in token:
+                        skip_next = True
                 continue
             if not remote_seen:
                 remote_seen = True  # first bare token is the remote
