@@ -65,9 +65,11 @@ def target_dir():
     # cwd rather than skipping the checks. That may block a legitimate push
     # written as `D=/repo; cd $D && ...` -- deliberate. A safety gate does not
     # get a shell interpreter; use a literal path when a push is blocked here.
+    # cd is processed first so that a later, valid -C on the actual git
+    # invocation always overwrites it -- matching the priority order above.
     for pattern in (
-        r'git\s+(?:' + GLOBAL_OPT + r'\s+)*?-C\s+' + PATH_RE,
         CMD_START + r'cd\s+' + PATH_RE,
+        r'git\s+(?:' + GLOBAL_OPT + r'\s+)*?-C\s+' + PATH_RE,
     ):
         for m in re.finditer(pattern, command):
             expanded = os.path.expanduser(os.path.expandvars(unquote(m)))
@@ -112,7 +114,10 @@ if [ -z "$REPO_ROOT" ]; then
 fi
 
 # --- Block push to protected branches ---
-if echo "$PUSH_CMDS" | grep -qE "(origin|upstream)[[:space:]]+(main|master|production|release)\b"; then
+# Matches the plain form (`origin main`) as well as refspecs that target a
+# protected branch without naming it as a bare token: `origin HEAD:main`,
+# `origin feature:main`, `origin +main`, `origin feature:refs/heads/main`.
+if echo "$PUSH_CMDS" | grep -qE "(origin|upstream)[[:space:]]+\+?([^[:space:]]*:)?(refs/heads/)?(main|master|production|release)\b"; then
     echo "[Pre-Push] BLOCKED: Direct push to a protected branch detected." >&2
     echo "Use a feature branch and create a PR instead." >&2
     exit 2
@@ -175,8 +180,7 @@ if [ -f "$REPO_ROOT/package.json" ]; then
                 # Only block on errors in files WE changed.
                 RELEVANT_ERRORS=""
                 while IFS= read -r changed_file; do
-                    BASENAME=$(basename "$changed_file")
-                    FILE_ERRORS=$(echo "$TS_OUTPUT" | grep "error TS" | grep -F "$BASENAME" || true)
+                    FILE_ERRORS=$(echo "$TS_OUTPUT" | grep "error TS" | grep -F "$changed_file" || true)
                     if [ -n "$FILE_ERRORS" ]; then
                         RELEVANT_ERRORS="${RELEVANT_ERRORS}${FILE_ERRORS}\n"
                     fi
