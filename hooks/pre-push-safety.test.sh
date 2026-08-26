@@ -9,6 +9,14 @@
 #   - the `git -C <dir>` form, which skipped every check including the
 #     protected-branch block
 #   - a `git commit` whose message merely QUOTES a push command
+#   - a refspec push to a non-protected ref, rejected because the repo happened
+#     to be on main -- the destination is what matters, not the checked-out branch
+#   - backticks in the hook's own python comments being command-substituted by
+#     bash, which ran a `cd` from an example and printed an error on every push
+#   - `--repo=<repo>` (attached form) swallowing the positional remote arg, so
+#     the real destination token was misread as the remote and never checked
+#   - a chained command with an earlier refspec $P making a LATER, bare $P in
+#     the same command skip the checked-out-branch check entirely
 set -uo pipefail
 
 HOOK="${1:-$(dirname "$0")/pre-push-safety.sh}"
@@ -81,6 +89,42 @@ check "repo on $PROTECTED, reached by cd" 2 \
     "cd $ON_MAIN && $G $P" "$ON_FEATURE"
 check "force onto $PROTECTED" 2 \
     "$G -C $ON_MAIN $P --force" "$ON_FEATURE"
+check "$PROTECTED as an explicit refspec destination" 2 \
+    "$G -C $ON_FEATURE $P origin HEAD:$PROTECTED" "$ON_FEATURE"
+check "$PROTECTED as a fully-qualified refspec destination" 2 \
+    "$G -C $ON_FEATURE $P origin HEAD:refs/heads/$PROTECTED" "$ON_FEATURE"
+check "bare HEAD source pushes the checked-out $PROTECTED branch" 2 \
+    "$G -C $ON_MAIN $P origin HEAD" "$ON_MAIN"
+check "bare @ source pushes the checked-out $PROTECTED branch" 2 \
+    "$G -C $ON_MAIN $P origin @" "$ON_MAIN"
+check "push-option value is not mistaken for a refspec destination" 2 \
+    "$G -C $ON_MAIN $P origin -o ci.skip" "$ON_MAIN"
+check "attached --repo= form still resolves the real destination" 2 \
+    "$G -C $ON_FEATURE $P --repo=origin $PROTECTED" "$ON_FEATURE"
+check "a chained bare $P is still checked even after a refspec $P earlier" 2 \
+    "$G -C $ON_MAIN $P origin feature/x:live && $G -C $ON_MAIN $P" "$ON_FEATURE"
+
+echo "allow (destination, not checked-out branch, decides):"
+# The promote case: the repo sits on main, but the push lands on `live`.
+check "refspec onto a non-protected ref from a repo on $PROTECTED" 0 \
+    "$G -C $ON_MAIN $P origin origin/$PROTECTED:refs/heads/live" "$ON_MAIN"
+check "short refspec onto a non-protected ref from a repo on $PROTECTED" 0 \
+    "$G -C $ON_MAIN $P origin HEAD:live" "$ON_MAIN"
+
+# The hook must not leak shell noise of its own. A backtick in its python
+# comments used to be command-substituted, printing "cd: /repo: ..." to stderr.
+echo "hygiene:"
+NOISE=$(python3 -c "
+import json, sys
+print(json.dumps({'tool_input': {'command': sys.argv[1]}, 'cwd': sys.argv[2]}))
+" "$G -C $ON_FEATURE $P origin feature/x" "$ON_FEATURE" | bash "$HOOK" 2>&1 >/dev/null)
+if echo "$NOISE" | grep -qE 'No such file or directory|command not found'; then
+    fail=$((fail + 1))
+    printf '  FAIL  hook emits no shell noise (got: %s)\n' "$NOISE"
+else
+    pass=$((pass + 1))
+    printf '  ok    hook emits no shell noise\n'
+fi
 
 echo
 echo "$pass passed, $fail failed"
