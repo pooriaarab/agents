@@ -89,6 +89,12 @@ check "$PROTECTED as an explicit refspec destination" 2 \
     "$G -C $ON_FEATURE $P origin HEAD:$PROTECTED" "$ON_FEATURE"
 check "$PROTECTED as a fully-qualified refspec destination" 2 \
     "$G -C $ON_FEATURE $P origin HEAD:refs/heads/$PROTECTED" "$ON_FEATURE"
+check "bare HEAD source pushes the checked-out $PROTECTED branch" 2 \
+    "$G -C $ON_MAIN $P origin HEAD" "$ON_MAIN"
+check "bare @ source pushes the checked-out $PROTECTED branch" 2 \
+    "$G -C $ON_MAIN $P origin @" "$ON_MAIN"
+check "push-option value is not mistaken for a refspec destination" 2 \
+    "$G -C $ON_MAIN $P origin -o ci.skip" "$ON_MAIN"
 
 echo "allow (destination, not checked-out branch, decides):"
 # The promote case: the repo sits on main, but the push lands on `live`.
