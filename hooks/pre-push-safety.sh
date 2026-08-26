@@ -29,11 +29,6 @@ INPUT=$(cat)
 # --- Parse the payload once ------------------------------------------------
 # Line 1 is the target repo dir; the remaining lines are the push invocations
 # found in the command (one per line), already stripped of git's global options.
-# The python source is fed through a QUOTED heredoc, never `python3 -c "..."`.
-# In a double-quoted bash string the backticks in a code comment become command
-# substitution: a comment mentioning `D=/repo; cd $D` actually RAN `cd /repo`
-# and printed "cd: /repo: No such file or directory" on every push. A quoted
-# heredoc disables all expansion, so the python body is inert text.
 # The python source is passed as a SINGLE-quoted -c argument. Two constraints
 # force this exact shape:
 #   - It must not be double-quoted. In a double-quoted bash string the
@@ -122,10 +117,12 @@ def destinations(invocations):
     # silently skipping the protected-destination check.
     REPO_OPTS = {"--repo"}
     dsts = []
+    any_bare = False
     for invocation in invocations:
         tokens = invocation.split()[2:]  # drop the leading git push
         remote_seen = False
         skip_next = False
+        invocation_dsts = []
         for token in tokens:
             if skip_next:
                 skip_next = False
@@ -146,23 +143,30 @@ def destinations(invocations):
                 # No colon: this is a SOURCE-only refspec. `push origin HEAD`
                 # pushes the checked-out branch to a same-named remote branch
                 # -- it is not a literal destination named "HEAD"/"@". Leave
-                # it uncounted so HAS_REFSPEC falls back to the
-                # checked-out-branch gate, which resolves the real branch.
+                # it uncounted so this invocation is treated as bare below.
                 continue
             dst = spec.split(":")[-1] if ":" in spec else spec
             if dst.startswith("refs/heads/"):
                 dst = dst[len("refs/heads/"):]
             if dst.startswith("refs/tags/") or dst == "":
                 continue
-            dsts.append(dst)
-    return dsts
+            invocation_dsts.append(dst)
+        # A command can chain multiple pushes (`push a && push b`). If ANY of
+        # them carries no explicit destination, THAT invocation pushes
+        # whatever branch is checked out, and the checked-out-branch gate
+        # below must still run for it -- even though a sibling invocation in
+        # the same chain did supply an explicit, non-protected refspec.
+        if not invocation_dsts:
+            any_bare = True
+        dsts.extend(invocation_dsts)
+    return dsts, any_bare
 
 
 invocations = push_invocations()
-dsts = destinations(invocations)
+dsts, any_bare = destinations(invocations)
 
 print(target_dir())
-print("HAS_REFSPEC=" + ("yes" if dsts else "no"))
+print("HAS_REFSPEC=" + ("no" if any_bare else "yes"))
 print("PROTECTED_DST=" + ("yes" if any(d in PROTECTED for d in dsts) else "no"))
 for invocation in invocations:
     print(invocation)' 2>/dev/null)

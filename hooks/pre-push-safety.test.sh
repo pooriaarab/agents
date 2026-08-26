@@ -15,6 +15,8 @@
 #     bash, which ran a `cd` from an example and printed an error on every push
 #   - `--repo=<repo>` (attached form) swallowing the positional remote arg, so
 #     the real destination token was misread as the remote and never checked
+#   - a chained command with an earlier refspec $P making a LATER, bare $P in
+#     the same command skip the checked-out-branch check entirely
 set -uo pipefail
 
 HOOK="${1:-$(dirname "$0")/pre-push-safety.sh}"
@@ -99,6 +101,8 @@ check "push-option value is not mistaken for a refspec destination" 2 \
     "$G -C $ON_MAIN $P origin -o ci.skip" "$ON_MAIN"
 check "attached --repo= form still resolves the real destination" 2 \
     "$G -C $ON_FEATURE $P --repo=origin $PROTECTED" "$ON_FEATURE"
+check "a chained bare $P is still checked even after a refspec $P earlier" 2 \
+    "$G -C $ON_MAIN $P origin feature/x:live && $G -C $ON_MAIN $P" "$ON_FEATURE"
 
 echo "allow (destination, not checked-out branch, decides):"
 # The promote case: the repo sits on main, but the push lands on `live`.
