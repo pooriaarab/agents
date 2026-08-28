@@ -70,7 +70,7 @@ Verified end to end: box pinned to environment `replytosocial` v5, 732 MB of `no
 
 ### The base image already has the toolchain
 
-crabbox apt-installs `curl`, `git`, `build-essential`, `python3`, `pkg-config`, then installs bun. All of it is already present: node 24, bun 1.3.14, git, gh, rg, jq, docker, ffmpeg, Chrome, plus Go, Rust, Java, Ruby, PHP and more. That work is waste on every attach.
+The base image ships `node` 24, `bun` 1.3.14, `git`, `gh`, `gcc`, `make`, `python3`, `pkg-config`, `rg`, `jq`, `docker`, `ffmpeg`, Chrome, plus Go, Rust, Java, Ruby and PHP. It looks like crabbox wastes time apt-installing that on every attach. It does not: the step is guarded by `command -v curl / git / gcc`, all three are present, and it never fires. Verified on a real Box. There is nothing to cut here, and it is worth recording because it is the obvious-looking optimisation that turns out not to exist.
 
 ## Steps to repeat
 
