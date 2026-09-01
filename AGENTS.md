@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Read `.agents/brand.md` and `.agents/design.md` before changing public guidance or operator-facing output.
+
 <!-- pr-standards:start -->
 
 ## Pull requests
