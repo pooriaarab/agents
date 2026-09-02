@@ -15,4 +15,6 @@ memory.toml
 .worktrees/
 dist/
 build/
-
+# Cursor cloud — local secrets stay local
+.env.local
+.env.*.local
